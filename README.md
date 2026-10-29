@@ -201,7 +201,13 @@ Mount a volume at `/data` to keep uploads across restarts.
 
 ## Deployment
 
-_To be added: hosting platform, region and URL._
+The live demo runs on [Render](https://render.com)'s free plan in the Singapore region, as described in [`render.yaml`](render.yaml):
+
+1. In the Render dashboard choose **New → Blueprint** and select this repository.
+2. Enter `GEMINI_API_KEY` (and `GROQ_API_KEY` for the fallback) when asked; `DJANGO_SECRET_KEY` is generated for you.
+3. Render builds the Dockerfile and redeploys on every push to `main`.
+
+Free-plan constraints shape the configuration: with 512 MB of RAM the service runs one gunicorn process with four threads and accepts uploads up to 10 MB. It spins down after 15 idle minutes and takes about a minute to wake up, and its disk is temporary, so uploaded datasets disappear when it does.
 
 ## Limitations and next steps
 

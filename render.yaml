@@ -1,0 +1,23 @@
+# Render Blueprint (https://render.com/docs/blueprint-spec).
+# "New > Blueprint" in the Render dashboard reads this file and asks for the API keys.
+services:
+  - type: web
+    name: regexflow
+    runtime: docker
+    plan: free
+    region: singapore
+    healthCheckPath: /api/health/
+    envVars:
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DJANGO_ALLOWED_HOSTS
+        value: .onrender.com
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      # The free instance has 512 MB of RAM: one process with a few threads, and smaller uploads.
+      - key: WEB_CONCURRENCY
+        value: "1"
+      - key: MAX_UPLOAD_SIZE_MB
+        value: "10"
