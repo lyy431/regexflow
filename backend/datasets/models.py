@@ -41,13 +41,15 @@ class Transformation(models.Model):
     """One applied step in a dataset's history."""
 
     class Kind(models.TextChoices):
-        REGEX_REPLACE = "regex_replace", "Regex replace"
+        REGEX_REPLACE = "regex_replace", "Find and replace"
+        REFORMAT = "reformat", "Standardise a format"
+        NORMALIZE_VALUES = "normalize_values", "Normalise values"
 
     dataset = models.ForeignKey(Dataset, related_name="transformations", on_delete=models.CASCADE)
     version = models.PositiveIntegerField(help_text="The dataset version this step produced.")
     kind = models.CharField(max_length=32, choices=Kind.choices, default=Kind.REGEX_REPLACE)
     instruction = models.TextField(blank=True, help_text="The user's plain-English request, if any.")
-    params = models.JSONField(help_text="Pattern, flags, replacement and target columns.")
+    params = models.JSONField(help_text="What the step does, depending on its kind (pattern, template, mapping...).")
     explanation = models.TextField(blank=True)
     source = models.CharField(max_length=64, blank=True, help_text="LLM that wrote the pattern, or 'manual'.")
     stats = models.JSONField(default=dict, help_text="Match and change counts.")

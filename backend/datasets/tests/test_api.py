@@ -10,9 +10,9 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from datasets.models import Dataset
-from datasets.services import generation, operations, storage
-from llm import RegexGenerator
-from llm.testing import FakeProvider, suggestion
+from datasets.services import generation, operations, storage, value_mapping
+from llm import Generator
+from llm.testing import FakeProvider, mapping_answer, reformat_answer, suggestion
 
 pytestmark = pytest.mark.django_db
 
@@ -29,6 +29,12 @@ EMAIL_SUGGESTION = suggestion(
 )
 INSTRUCTION = "Find email addresses in the Email column and replace them with 'REDACTED'."
 
+MEMBERS_CSV = (
+    "ID,Joined,State\n1,31/01/2024,NSW\n2,2024-02-15,Victoria\n3,05/03/2024,vic\n4,28/02/2024,New South Wales\n"
+)
+DATE_PATTERN = r"\b(?P<day>\d{2})/(?P<month>\d{2})/(?P<year>\d{4})\b"
+ISO_TEMPLATE = r"\g<year>-\g<month>-\g<day>"
+
 
 @pytest.fixture
 def api():
@@ -41,7 +47,7 @@ def fake_llm(monkeypatch):
 
     def install(*replies):
         provider = FakeProvider(*replies)
-        monkeypatch.setattr(generation, "get_regex_generator", lambda: RegexGenerator([provider]))
+        monkeypatch.setattr(generation, "get_generator", lambda: Generator([provider]))
         return provider
 
     return install
@@ -220,7 +226,11 @@ class TestPreview:
     def test_reports_requests_that_are_not_find_and_replace(self, api, dataset_id, fake_llm):
         fake_llm(suggestion("", error="Sorting rows is not a find-and-replace."))
         response = api.post(url(dataset_id, "preview/"), {"instruction": "sort by name"}, format="json")
-        assert (response.status_code, error_code(response)) == (422, "pattern_not_expressible")
+        assert (response.status_code, error_code(response)) == (422, "request_not_possible")
+
+    def test_rejects_unknown_kinds_of_step(self, api, dataset_id):
+        response = api.post(url(dataset_id, "preview/"), {"kind": "sort", "instruction": "x"}, format="json")
+        assert (response.status_code, error_code(response)) == (400, "validation_error")
 
 
 class TestApplyAndUndo:
@@ -258,6 +268,120 @@ class TestApplyAndUndo:
         assert (undone.status_code, undone.data["current_version"], undone.data["transformations"]) == (200, 0, [])
         assert api.get(url(dataset_id, "rows/")).data["rows"][0][1] == "John Doe"
         assert (again.status_code, error_code(again)) == (409, "nothing_to_undo")
+
+
+class TestReformat:
+    def test_rewrites_dates_from_a_plain_english_instruction(self, api, fake_llm):
+        dataset_id = upload(api, MEMBERS_CSV, "members.csv").data["id"]
+        fake_llm(reformat_answer(DATE_PATTERN, ISO_TEMPLATE, target_columns=["Joined"]))
+        instruction = "Convert the joined dates to ISO format"
+
+        preview = api.post(url(dataset_id, "preview/"), {"kind": "reformat", "instruction": instruction}, format="json")
+        assert preview.status_code == 200, preview.data
+        assert (preview.data["kind"], preview.data["columns"]) == ("reformat", ["Joined"])
+        assert preview.data["stats"]["cells_changed"] == 3
+        assert (preview.data["samples"][0]["before"], preview.data["samples"][0]["after"]) == (
+            "31/01/2024",
+            "2024-01-31",
+        )
+
+        fields = ("pattern", "flags", "template", "columns", "explanation", "source")
+        applied = api.post(
+            url(dataset_id, "transformations/"),
+            {"kind": "reformat", "instruction": instruction} | {key: preview.data[key] for key in fields},
+            format="json",
+        )
+        assert applied.status_code == 201, applied.data
+        step = applied.data["transformations"][0]
+        assert (step["kind"], step["params"]["template"], step["source"]) == ("reformat", ISO_TEMPLATE, "fake:model")
+        rows = api.get(url(dataset_id, "rows/")).data
+        assert [row[1] for row in rows["rows"]] == ["2024-01-31", "2024-02-15", "2024-03-05", "2024-02-28"]
+        assert rows["changed_cells"] == [[1], [], [1], [1]]
+
+    def test_accepts_a_hand_written_pattern_and_template(self, api, dataset_id):
+        response = api.post(
+            url(dataset_id, "preview/"),
+            {"kind": "reformat", "pattern": r"^(?P<first>\w+) (?P<last>\w+)$", "template": r"\g<last>, \g<first>"},
+            format="json",
+        )
+
+        assert response.status_code == 200, response.data
+        assert response.data["source"] == "manual"
+        assert response.data["samples"][0]["after"] == "Doe, John"
+
+    @pytest.mark.parametrize(
+        ("payload", "code"),
+        [
+            ({"pattern": r"(?P<a>\d+)", "template": r"\g<b>"}, "invalid_pattern"),
+            ({"pattern": r"(\d+)"}, "validation_error"),
+            ({"instruction": "  "}, "validation_error"),
+        ],
+    )
+    def test_reports_problems(self, api, dataset_id, payload, code):
+        response = api.post(url(dataset_id, "preview/"), {"kind": "reformat"} | payload, format="json")
+        assert (response.status_code, error_code(response)) == (400, code)
+
+
+class TestNormalize:
+    def test_maps_variants_to_one_form(self, api, fake_llm):
+        dataset_id = upload(api, MEMBERS_CSV, "members.csv").data["id"]
+        provider = fake_llm(mapping_answer({"Victoria": "VIC", "vic": "VIC", "New South Wales": "NSW"}))
+
+        preview = api.post(
+            url(dataset_id, "preview/"),
+            {"kind": "normalize_values", "column": "state", "instruction": "official abbreviations"},
+            format="json",
+        )
+
+        assert preview.status_code == 200, preview.data
+        assert preview.data["column"] == "State"
+        assert preview.data["mapping"] == [
+            {"from": "New South Wales", "to": "NSW", "count": 1},
+            {"from": "Victoria", "to": "VIC", "count": 1},
+            {"from": "vic", "to": "VIC", "count": 1},
+        ]
+        assert preview.data["stats"]["cells_changed"] == 3
+        assert '{"value": "Victoria", "count": 1}' in provider.calls[0][-1]["content"]
+
+    def test_applies_the_mapping_as_edited_by_the_user(self, api, dataset_id):
+        dataset_id = upload(api, MEMBERS_CSV, "members.csv").data["id"]
+        mapping = {"Victoria": "VIC", "New South Wales": "NSW"}  # the user left "vic" out
+
+        applied = api.post(
+            url(dataset_id, "transformations/"),
+            {"kind": "normalize_values", "column": "State", "mapping": mapping, "source": "fake:model"},
+            format="json",
+        )
+
+        assert applied.status_code == 201, applied.data
+        step = applied.data["transformations"][0]
+        assert (step["kind"], step["params"], step["source"]) == (
+            "normalize_values",
+            {"column": "State", "mapping": mapping},
+            "fake:model",
+        )
+        assert [row[2] for row in api.get(url(dataset_id, "rows/")).data["rows"]] == ["NSW", "VIC", "vic", "NSW"]
+
+        undone = api.post(url(dataset_id, "transformations/undo/"))
+        assert undone.data["current_version"] == 0
+        assert [row[2] for row in api.get(url(dataset_id, "rows/")).data["rows"]][1] == "Victoria"
+
+    def test_rejects_free_text_columns(self, api, dataset_id, monkeypatch):
+        monkeypatch.setattr(value_mapping, "MAX_DISTINCT_VALUES", 2)
+        response = api.post(url(dataset_id, "preview/"), {"kind": "normalize_values", "column": "Name"}, format="json")
+        assert (response.status_code, error_code(response)) == (422, "column_not_suitable")
+
+    @pytest.mark.parametrize(
+        ("payload", "status", "code"),
+        [
+            ({}, 400, "validation_error"),
+            ({"column": "Phone"}, 400, "column_not_found"),
+            ({"column": "Name", "mapping": {"John Doe": ""}}, 400, "validation_error"),
+        ],
+    )
+    def test_reports_problems(self, api, dataset_id, payload, status, code):
+        response = api.post(url(dataset_id, "preview/"), {"kind": "normalize_values"} | payload, format="json")
+        assert (response.status_code, error_code(response)) == (status, code)
 
 
 class TestExportAndLifecycle:

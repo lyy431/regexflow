@@ -7,15 +7,21 @@ timeouts, so a catastrophically backtracking pattern cannot tie up the server.
 
 import time
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
 
 import pandas as pd
 import regex
 
 from datasets.exceptions import InvalidPattern, RegexTimeout
+from datasets.services.changes import CellChange, ReplacementOutcome
 
 MAX_PATTERN_LENGTH = 1000
+MAX_TEMPLATE_LENGTH = 1000
 SUPPORTED_FLAGS = {"IGNORECASE": regex.IGNORECASE, "MULTILINE": regex.MULTILINE, "DOTALL": regex.DOTALL}
+
+# A backslash in a replacement template: a group reference (\g<name>, \g<2>, \2),
+# another escaped character, or a stray backslash at the very end.
+_TEMPLATE_ESCAPE = regex.compile(r"\\(?:g<([^>]*)>|([0-9]{1,2})|(.)|$)", regex.DOTALL)
+_TEMPLATE_CHARACTER_ESCAPES = frozenset("\\ntr")
 
 # Non-empty probe strings used to reject patterns that can match zero characters
 # inside text (such as \d* or \b): those would insert the replacement between
@@ -62,30 +68,24 @@ def literal_template(replacement: str) -> str:
     return replacement.replace("\\", "\\\\")
 
 
-@dataclass(frozen=True)
-class CellChange:
-    row: int
-    column: str
-    before: str
-    after: str
-    spans: tuple[tuple[int, int], ...]  # matched character ranges in ``before``
-
-
-@dataclass
-class ReplacementOutcome:
-    frame: pd.DataFrame
-    matches_by_column: dict[str, int]
-    cells_changed: int
-    rows_affected: int
-    samples: list[CellChange] = field(default_factory=list)
-
-    def stats(self) -> dict:
-        return {
-            "matches": sum(self.matches_by_column.values()),
-            "cells_changed": self.cells_changed,
-            "rows_affected": self.rows_affected,
-            "matches_by_column": self.matches_by_column,
-        }
+def check_template(compiled: regex.Pattern, template: str) -> None:
+    """Raise :class:`InvalidPattern` unless every group ``template`` refers to exists in ``compiled``."""
+    if not template:
+        raise InvalidPattern("The template is empty.")
+    if len(template) > MAX_TEMPLATE_LENGTH:
+        raise InvalidPattern(f"The template is longer than {MAX_TEMPLATE_LENGTH} characters.")
+    for escape in _TEMPLATE_ESCAPE.finditer(template):
+        name, number, character = escape.groups()
+        if name is not None:
+            if not (name.isdigit() and int(name) <= compiled.groups) and name not in compiled.groupindex:
+                raise InvalidPattern(f"The template refers to \\g<{name}>, but the pattern has no such group.")
+        elif number is not None:
+            if not 1 <= int(number) <= compiled.groups:
+                raise InvalidPattern(
+                    f"The template refers to group {number}, but the pattern has {compiled.groups} group(s)."
+                )
+        elif character not in _TEMPLATE_CHARACTER_ESCAPES:
+            raise InvalidPattern("The template has a stray backslash; write \\\\ for a literal backslash.")
 
 
 def finds_match(frame: pd.DataFrame, compiled: regex.Pattern, columns: Sequence[str], *, timeout: float) -> bool:
@@ -112,17 +112,17 @@ def finds_match(frame: pd.DataFrame, compiled: regex.Pattern, columns: Sequence[
 def replace_in_frame(
     frame: pd.DataFrame,
     compiled: regex.Pattern,
-    replacement: str,
+    template: str,
     columns: Sequence[str],
     *,
     timeout: float,
     sample_limit: int = 10,
 ) -> ReplacementOutcome:
-    """Replace every match in ``columns`` with the literal ``replacement``.
+    """Replace every match in ``columns`` using a replacement ``template`` (``\\g<name>`` refers to a group).
 
-    Raises :class:`RegexTimeout` when the whole operation exceeds ``timeout`` seconds.
+    Pass ``literal_template(text)`` to insert text verbatim. Raises :class:`RegexTimeout`
+    when the whole operation exceeds ``timeout`` seconds.
     """
-    template = literal_template(replacement)
     deadline = time.monotonic() + timeout
     result = frame.copy()
     matches_by_column: dict[str, int] = {}
@@ -147,6 +147,8 @@ def replace_in_frame(
                     f"Applying the pattern took longer than {timeout:g} seconds. "
                     "Try a simpler or more specific pattern."
                 ) from None
+            except (regex.error, IndexError) as exc:  # a template the checks above did not catch
+                raise InvalidPattern(f"The replacement template could not be applied: {exc}.") from exc
             new_values.append(new_value)
             if not count:
                 continue

@@ -706,6 +706,93 @@ fieldset.field > legend {
   font-size: 0.85rem;
 }
 
+/* ---------- Kinds of step ---------- */
+
+.kind-tabs {
+  display: flex;
+  gap: 4px;
+  margin: -4px 0 16px;
+  padding: 4px;
+  border-radius: var(--radius-small);
+  background: var(--surface-muted);
+}
+
+.kind-tabs__tab {
+  flex: 1;
+  padding: 7px 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.kind-tabs__tab:hover {
+  color: var(--text);
+}
+
+.kind-tabs__tab[aria-selected="true"] {
+  background: var(--surface);
+  color: var(--accent);
+  box-shadow: var(--shadow);
+}
+
+.segmented--block {
+  margin-bottom: 12px;
+}
+
+.mapping-table {
+  width: 100%;
+  margin-bottom: 12px;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.mapping-table caption {
+  margin-bottom: 8px;
+  text-align: left;
+  color: var(--text-muted);
+}
+
+.mapping-table th {
+  padding: 4px 6px;
+  text-align: left;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.mapping-table td {
+  padding: 4px 6px;
+  border-top: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.mapping-table td:first-child {
+  width: 1%;
+}
+
+.mapping-table input:not([type="checkbox"]) {
+  padding: 4px 8px;
+}
+
+.mapping-table__from {
+  overflow-wrap: anywhere;
+}
+
+.mapping-table__count {
+  margin-left: 6px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.mapping-table__off .mapping-table__from {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
 /* ---------- Data table ---------- */
 
 .table-card {

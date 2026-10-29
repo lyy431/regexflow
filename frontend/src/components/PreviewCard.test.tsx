@@ -2,11 +2,12 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import type { Preview } from "../api/types";
+import type { FindReplacePreview } from "../api/types";
 import { PreviewCard } from "./PreviewCard";
 
-function makePreview(overrides: Partial<Preview> = {}): Preview {
+function makePreview(overrides: Partial<FindReplacePreview> = {}): FindReplacePreview {
   return {
+    kind: "regex_replace",
     pattern: "\\b\\S+@\\S+\\b",
     flags: [],
     columns: ["Email"],
@@ -20,7 +21,7 @@ function makePreview(overrides: Partial<Preview> = {}): Preview {
   };
 }
 
-function renderCard(preview: Preview) {
+function renderCard(preview: FindReplacePreview) {
   const handlers = { onApply: vi.fn(), onRerun: vi.fn(), onDiscard: vi.fn() };
   render(<PreviewCard preview={preview} instruction="hide emails" busy={null} {...handlers} />);
   return handlers;
@@ -33,6 +34,7 @@ describe("PreviewCard", () => {
     await userEvent.click(screen.getByRole("button", { name: "Apply step" }));
 
     expect(onApply).toHaveBeenCalledWith({
+      kind: "regex_replace",
       instruction: "hide emails",
       pattern: "\\b\\S+@\\S+\\b",
       flags: [],
@@ -61,7 +63,9 @@ describe("PreviewCard", () => {
 
     expect(screen.getByRole("button", { name: "Apply step" })).toBeDisabled();
     await userEvent.click(screen.getByRole("button", { name: "Update preview" }));
-    expect(onRerun).toHaveBeenCalledWith(expect.objectContaining({ pattern: "\\b\\S+@\\S+\\bx", replacement: "REDACTED" }));
+    expect(onRerun).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "regex_replace", pattern: "\\b\\S+@\\S+\\bx", replacement: "REDACTED" }),
+    );
   });
 
   it("cannot apply a pattern that matched nothing", () => {

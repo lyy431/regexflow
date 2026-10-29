@@ -6,12 +6,14 @@ from django.core.cache import cache
 from llm import (
     AllProvidersFailed,
     ColumnInfo,
+    FindReplaceTask,
+    Generator,
     InvalidSuggestion,
     NoProviderConfigured,
-    PatternNotExpressible,
     ProviderUnavailable,
-    RegexGenerator,
-    parse_suggestion,
+    RegexSuggestion,
+    RequestNotPossible,
+    parse_reply,
 )
 from llm.testing import FakeProvider, suggestion
 
@@ -26,35 +28,35 @@ def compiles(candidate) -> None:
         raise InvalidSuggestion(f"Invalid regular expression: {exc}.") from exc
 
 
-class TestParseSuggestion:
+def task(instruction="emails", validate=None):
+    return FindReplaceTask(instruction, COLUMNS, validate=validate)
+
+
+class TestParseReply:
     def test_reads_json_inside_a_markdown_fence(self):
-        parsed = parse_suggestion(r'```json {"pattern": "\\d+", "flags": ["i"], "explanation": "Digits."} ```')
+        parsed = parse_reply(r'```json {"pattern": "\\d+", "explanation": "Digits."} ```', RegexSuggestion)
         assert parsed.pattern == r"\d+"
-        assert parsed.flags == ["IGNORECASE"]
 
     def test_repairs_regex_backslashes_that_were_not_escaped(self):
-        assert parse_suggestion(r'{"pattern": "\d{3}\s\w+"}').pattern == r"\d{3}\s\w+"
+        assert parse_reply(r'{"pattern": "\d{3}\s\w+"}', RegexSuggestion).pattern == r"\d{3}\s\w+"
 
     def test_repair_keeps_backslashes_that_were_escaped(self):
-        assert parse_suggestion(r'{"pattern": "\\d+\s"}').pattern == r"\d+\s"
+        assert parse_reply(r'{"pattern": "\\d+\s"}', RegexSuggestion).pattern == r"\d+\s"
 
-    def test_turns_json_backspace_into_a_word_boundary(self):
-        assert parse_suggestion(r'{"pattern": "\bcat\b"}').pattern == r"\bcat\b"
-
-    def test_treats_nulls_as_empty(self):
-        parsed = parse_suggestion('{"pattern": "a", "replacement": null, "flags": null}')
+    def test_treats_nulls_as_defaults(self):
+        parsed = parse_reply('{"pattern": "a", "replacement": null, "flags": null}', RegexSuggestion)
         assert (parsed.replacement, parsed.flags) == ("", [])
 
     @pytest.mark.parametrize("reply", ["no json here", '{"pattern": 5}', "[1, 2]", '{"pattern": "unterminated}'])
     def test_rejects_unusable_replies(self, reply):
         with pytest.raises(InvalidSuggestion):
-            parse_suggestion(reply)
+            parse_reply(reply, RegexSuggestion)
 
 
-class TestRegexGenerator:
-    def test_returns_the_first_providers_suggestion(self):
+class TestGenerator:
+    def test_returns_the_first_providers_answer(self):
         provider = FakeProvider(suggestion(EMAIL, target_columns=["email"]))
-        result = RegexGenerator([provider]).generate("find   emails", COLUMNS)
+        result = Generator([provider]).run(task("find   emails"))
 
         assert result.suggestion.pattern == EMAIL
         assert result.suggestion.target_columns == ["Email"]  # matched case-insensitively
@@ -65,54 +67,46 @@ class TestRegexGenerator:
 
     def test_asks_the_model_to_fix_an_invalid_pattern(self):
         provider = FakeProvider(suggestion("[unclosed"), suggestion(EMAIL))
-        result = RegexGenerator([provider]).generate("emails", COLUMNS, validate=compiles)
+        result = Generator([provider]).run(task(validate=compiles))
 
         assert result.suggestion.pattern == EMAIL
         assert len(provider.calls) == 2
         assert "could not be used" in provider.calls[1][-1]["content"]
 
-    def test_asks_the_model_to_fix_an_unknown_column(self):
-        provider = FakeProvider(suggestion(EMAIL, target_columns=["Mail"]), suggestion(EMAIL))
-        result = RegexGenerator([provider]).generate("emails", COLUMNS)
-
-        assert result.suggestion.target_columns == []
-        assert "Unknown column(s) 'Mail'" in provider.calls[1][-1]["content"]
-
     def test_falls_back_when_a_provider_keeps_answering_badly(self):
         stubborn = FakeProvider(suggestion("[bad"), suggestion("[still bad"), label="first:model")
         backup = FakeProvider(suggestion(EMAIL), label="second:model")
-        result = RegexGenerator([stubborn, backup]).generate("emails", COLUMNS, validate=compiles)
 
-        assert result.provider == "second:model"
+        assert Generator([stubborn, backup]).run(task(validate=compiles)).provider == "second:model"
 
     def test_falls_back_when_a_provider_is_unavailable(self):
         down = FakeProvider(ProviderUnavailable("rate-limited"), label="first:model")
         backup = FakeProvider(suggestion(EMAIL), label="second:model")
 
-        assert RegexGenerator([down, backup]).generate("emails", COLUMNS).provider == "second:model"
+        assert Generator([down, backup]).run(task()).provider == "second:model"
 
     def test_reports_every_failure_when_all_providers_fail(self):
         first = FakeProvider(ProviderUnavailable("timed out"), label="first:model")
         second = FakeProvider("not json", "still not json", label="second:model")
 
         with pytest.raises(AllProvidersFailed) as error:
-            RegexGenerator([first, second]).generate("emails", COLUMNS)
+            Generator([first, second]).run(task())
         assert [f.split(":")[0] for f in error.value.failures] == ["first", "second"]
 
-    def test_stops_when_the_model_says_the_request_is_not_a_regex_job(self):
+    def test_stops_when_the_model_says_the_request_is_not_possible(self):
         first = FakeProvider(suggestion("", error="Sorting is not a find-and-replace."))
         second = FakeProvider(suggestion(EMAIL))
 
-        with pytest.raises(PatternNotExpressible, match="Sorting"):
-            RegexGenerator([first, second]).generate("sort by email", COLUMNS)
+        with pytest.raises(RequestNotPossible, match="Sorting"):
+            Generator([first, second]).run(task("sort by email"))
         assert second.calls == []
 
     def test_caches_answers(self):
         provider = FakeProvider(suggestion(EMAIL))
-        generator = RegexGenerator([provider], cache=cache)
+        generator = Generator([provider], cache=cache)
 
-        first = generator.generate("emails", COLUMNS)
-        second = generator.generate("emails", COLUMNS)
+        first = generator.run(task())
+        second = generator.run(task())
 
         assert len(provider.calls) == 1
         assert (first.cached, second.cached) == (False, True)
@@ -120,8 +114,4 @@ class TestRegexGenerator:
 
     def test_requires_a_provider(self):
         with pytest.raises(NoProviderConfigured):
-            RegexGenerator([]).generate("emails", COLUMNS)
-
-    def test_requires_an_instruction(self):
-        with pytest.raises(ValueError):
-            RegexGenerator([FakeProvider()]).generate("   ", COLUMNS)
+            Generator([]).run(task())

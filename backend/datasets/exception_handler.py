@@ -8,7 +8,7 @@ from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_exception_handler
 
 from datasets.exceptions import AppError
-from llm import AllProvidersFailed, NoProviderConfigured, PatternNotExpressible
+from llm import AllProvidersFailed, NoProviderConfigured, RequestNotPossible
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 def api_exception_handler(exc, context):
     if isinstance(exc, AppError):
         return _error_response(exc.status_code, exc.code, exc.message, exc.details)
-    if isinstance(exc, PatternNotExpressible):
-        return _error_response(422, "pattern_not_expressible", f"This can't be done as a find-and-replace: {exc}")
+    if isinstance(exc, RequestNotPossible):
+        return _error_response(422, "request_not_possible", f"This kind of step can't do that: {exc}")
     if isinstance(exc, NoProviderConfigured):
         return _error_response(
             503,

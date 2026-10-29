@@ -52,6 +52,11 @@ class ColumnNotFound(AppError):
     code = "column_not_found"
 
 
+class ColumnNotSuitable(AppError):
+    status_code = 422
+    code = "column_not_suitable"
+
+
 class MissingReplacement(AppError):
     code = "missing_replacement"
     default_message = "Say what to replace the matches with, in the replacement field or in your description."

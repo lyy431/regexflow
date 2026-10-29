@@ -1,4 +1,4 @@
-import type { ApplyRequest, Dataset, Preview, ReplacementRequest, RowsPage, ServerInfo } from "./types";
+import type { ApplyRequest, Dataset, Preview, RowsPage, ServerInfo, StepRequest } from "./types";
 
 /** An error response from the API: `{"error": {"code", "message", "details"}}`. */
 export class ApiError extends Error {
@@ -83,7 +83,7 @@ export const api = {
   getDataset: (id: string) => request<Dataset>(datasetPath(id)),
   rows: (id: string, page: number, pageSize: number, signal?: AbortSignal) =>
     request<RowsPage>(`${datasetPath(id, "rows/")}?page=${page}&page_size=${pageSize}`, { signal }),
-  preview: (id: string, body: ReplacementRequest) => postJson<Preview>(datasetPath(id, "preview/"), body),
+  preview: (id: string, body: StepRequest) => postJson<Preview>(datasetPath(id, "preview/"), body),
   apply: (id: string, body: ApplyRequest) => postJson<Dataset>(datasetPath(id, "transformations/"), body),
   undo: (id: string) => request<Dataset>(datasetPath(id, "transformations/undo/"), { method: "POST" }),
   exportUrl: (id: string, fileType: "csv" | "xlsx") => `${datasetPath(id, "export/")}?file_type=${fileType}`,

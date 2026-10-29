@@ -1,11 +1,14 @@
 import { useState } from "react";
 
 import { api, ApiError } from "../api/client";
-import type { ApplyRequest, Dataset, Preview, ReplacementRequest, ServerInfo } from "../api/types";
+import type { ApplyRequest, Dataset, Preview, ServerInfo, StepRequest } from "../api/types";
 import { DataTable } from "./DataTable";
 import { DatasetHeader } from "./DatasetHeader";
 import { ErrorBanner } from "./ErrorBanner";
+import { NormalizePreviewCard } from "./NormalizePreviewCard";
 import { PreviewCard } from "./PreviewCard";
+import type { PreviewBusy } from "./PreviewParts";
+import { ReformatPreviewCard } from "./ReformatPreviewCard";
 import { StepsList } from "./StepsList";
 import { TransformPanel } from "./TransformPanel";
 
@@ -47,10 +50,23 @@ export function Workspace({ dataset, serverInfo, onDatasetChange, onClose }: Pro
     }
   }
 
-  async function requestPreview(request: ReplacementRequest) {
+  async function requestPreview(request: StepRequest) {
     const result = await run("preview", () => api.preview(dataset.id, request));
     if (result) {
       setPreview((current) => ({ id: (current?.id ?? 0) + 1, instruction: request.instruction ?? "", result }));
+    }
+  }
+
+  function renderPreview({ id, instruction, result }: PreviewState) {
+    const cardBusy: PreviewBusy = busy === "preview" || busy === "apply" ? busy : null;
+    const shared = { key: id, instruction, busy: cardBusy, onApply: applyStep, onDiscard: () => setPreview(null) };
+    switch (result.kind) {
+      case "regex_replace":
+        return <PreviewCard {...shared} preview={result} onRerun={requestPreview} />;
+      case "reformat":
+        return <ReformatPreviewCard {...shared} preview={result} onRerun={requestPreview} />;
+      case "normalize_values":
+        return <NormalizePreviewCard {...shared} preview={result} />;
     }
   }
 
@@ -97,17 +113,7 @@ export function Workspace({ dataset, serverInfo, onDatasetChange, onClose }: Pro
               {message}
             </div>
           )}
-          {preview && (
-            <PreviewCard
-              key={preview.id}
-              preview={preview.result}
-              instruction={preview.instruction}
-              busy={busy === "preview" || busy === "apply" ? busy : null}
-              onApply={applyStep}
-              onRerun={requestPreview}
-              onDiscard={() => setPreview(null)}
-            />
-          )}
+          {preview && renderPreview(preview)}
           <StepsList
             steps={dataset.transformations}
             undoing={busy === "undo"}

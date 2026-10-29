@@ -1,23 +1,31 @@
 import { useState } from "react";
 
-import type { ApplyRequest, Preview, RegexFlag, ReplacementRequest } from "../api/types";
+import type { ApplyRequest, FindReplacePreview, RegexFlag, StepRequest } from "../api/types";
 import { plural } from "../utils/text";
 import { FlagToggles } from "./FlagToggles";
-import { HighlightedText, ReplacedText } from "./HighlightedText";
-import { Spinner } from "./Spinner";
+import { ReplacedText } from "./HighlightedText";
+import {
+  ApplyButtons,
+  ColumnsLine,
+  EditedNotice,
+  type PreviewBusy,
+  PreviewHeader,
+  SampleList,
+  sameFlags,
+  Summary,
+} from "./PreviewParts";
 
 interface Props {
-  preview: Preview;
+  preview: FindReplacePreview;
   /** The plain-English request behind this preview, recorded with the step. */
   instruction: string;
-  busy: "preview" | "apply" | null;
+  busy: PreviewBusy;
   onApply: (request: ApplyRequest) => void;
-  onRerun: (request: ReplacementRequest) => void;
+  onRerun: (request: StepRequest) => void;
   onDiscard: () => void;
 }
 
-const sameFlags = (a: RegexFlag[], b: RegexFlag[]) => a.length === b.length && a.every((flag) => b.includes(flag));
-
+/** Preview of a find-and-replace step. */
 export function PreviewCard({ preview, instruction, busy, onApply, onRerun, onDiscard }: Props) {
   const [pattern, setPattern] = useState(preview.pattern);
   const [flags, setFlags] = useState<RegexFlag[]>(preview.flags);
@@ -33,6 +41,7 @@ export function PreviewCard({ preview, instruction, busy, onApply, onRerun, onDi
   function apply() {
     if (!canApply || effectiveReplacement === null) return;
     onApply({
+      kind: "regex_replace",
       instruction,
       pattern: preview.pattern,
       flags: preview.flags,
@@ -44,18 +53,19 @@ export function PreviewCard({ preview, instruction, busy, onApply, onRerun, onDi
   }
 
   function rerun() {
-    onRerun({ instruction, pattern, flags, replacement: effectiveReplacement, columns: preview.columns });
+    onRerun({
+      kind: "regex_replace",
+      instruction,
+      pattern,
+      flags,
+      replacement: effectiveReplacement,
+      columns: preview.columns,
+    });
   }
 
   return (
     <section className="card preview" aria-labelledby="preview-title">
-      <div className="card__header">
-        <h2 id="preview-title">Preview</h2>
-        <span className="badge" title="Who wrote the regular expression">
-          {preview.source === "manual" ? "Your regex" : `${preview.source}${preview.cached ? " · cached" : ""}`}
-        </span>
-      </div>
-
+      <PreviewHeader source={preview.source} cached={preview.cached} />
       {preview.explanation && <p className="preview__explanation">{preview.explanation}</p>}
 
       <div className="field">
@@ -70,23 +80,9 @@ export function PreviewCard({ preview, instruction, busy, onApply, onRerun, onDi
         />
         <FlagToggles value={flags} onChange={setFlags} />
         {edited && (
-          <div className="preview__edited">
-            <span>You changed the pattern. Update the preview before applying it.</span>
-            <button
-              type="button"
-              className="button button--small"
-              onClick={rerun}
-              disabled={busy !== null || pattern === ""}
-            >
-              {busy === "preview" ? (
-                <>
-                  <Spinner /> Updating…
-                </>
-              ) : (
-                "Update preview"
-              )}
-            </button>
-          </div>
+          <EditedNotice busy={busy} disabled={pattern === ""} onRerun={rerun}>
+            You changed the pattern. Update the preview before applying it.
+          </EditedNotice>
         )}
       </div>
 
@@ -112,63 +108,27 @@ export function PreviewCard({ preview, instruction, busy, onApply, onRerun, onDi
         )}
       </div>
 
-      <div className="preview__columns">
-        <span>Columns:</span>
-        {preview.columns.map((column) => (
-          <span className="tag" key={column}>
-            {column}
-          </span>
-        ))}
-      </div>
+      <ColumnsLine columns={preview.columns} />
 
-      <p className={`preview__summary${stats.matches === 0 ? " preview__summary--empty" : ""}`} aria-live="polite">
+      <Summary empty={stats.matches === 0}>
         {stats.matches === 0
           ? "No matches. Try rephrasing your description or choosing other columns."
           : `${plural(stats.matches, "match", "matches")} in ${plural(stats.cells_changed, "cell")} across ${plural(stats.rows_affected, "row")}.`}
-      </p>
+      </Summary>
 
-      {preview.samples.length > 0 && (
-        <div className="samples">
-          <h3>
-            Examples
-            {stats.cells_changed > preview.samples.length ? ` (first ${preview.samples.length})` : ""}
-          </h3>
-          <ol>
-            {preview.samples.map((sample) => (
-              <li key={`${sample.row}-${sample.column}`} className="sample">
-                <div className="sample__where">
-                  Row {(sample.row + 1).toLocaleString("en-AU")} · {sample.column}
-                </div>
-                <div className="sample__before">
-                  <HighlightedText text={sample.before} spans={sample.spans} />
-                </div>
-                <div className="sample__after">
-                  {effectiveReplacement === null ? (
-                    <span className="hint">Enter a replacement to see the result</span>
-                  ) : (
-                    <ReplacedText text={sample.before} spans={sample.spans} replacement={effectiveReplacement} />
-                  )}
-                </div>
-              </li>
-            ))}
-          </ol>
-        </div>
-      )}
-
-      <div className="card__actions">
-        <button type="button" className="button button--primary" disabled={!canApply} onClick={apply}>
-          {busy === "apply" ? (
-            <>
-              <Spinner /> Applying…
-            </>
+      <SampleList
+        samples={preview.samples}
+        total={stats.cells_changed}
+        renderAfter={(sample) =>
+          effectiveReplacement === null ? (
+            <span className="hint">Enter a replacement to see the result</span>
           ) : (
-            "Apply step"
-          )}
-        </button>
-        <button type="button" className="button button--ghost" disabled={busy !== null} onClick={onDiscard}>
-          Discard
-        </button>
-      </div>
+            <ReplacedText text={sample.before} spans={sample.spans} replacement={effectiveReplacement} />
+          )
+        }
+      />
+
+      <ApplyButtons busy={busy} canApply={canApply} onApply={apply} onDiscard={onDiscard} />
     </section>
   );
 }

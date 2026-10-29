@@ -1,6 +1,6 @@
 # RegexFlow: find and replace in spreadsheets with plain English
 
-Upload a CSV or Excel file, describe what to find ("email addresses", "Australian mobile numbers"), and RegexFlow asks a large language model to write the regular expression. You see the regex, an explanation, match counts and before/after examples, then apply the replacement as a step that you can undo.
+Upload a CSV or Excel file, describe what to find ("email addresses", "Australian mobile numbers"), and RegexFlow asks a large language model to write the regular expression. You see the regex, an explanation, match counts and before/after examples, then apply the replacement as a step that you can undo. Two more LLM-powered steps rewrite values into a standard format and clean up inconsistently written categories.
 
 Built with **Django + Django REST Framework** and **React + TypeScript**.
 
@@ -17,6 +17,11 @@ Built with **Django + Django REST Framework** and **React + TypeScript**.
 - **Apply as a step.** Steps form a history with undo, and the cells changed by the latest step are highlighted in the table.
 - **Write a regex yourself** when you prefer, or when no LLM is available.
 - **Download** the processed data as CSV or Excel.
+
+Two further data transformations use the LLM (the brief's optional "two data transformations of your choice"):
+
+- **Standardise a format.** *"Convert dates like 31/01/2024 to 2024-01-31"*, *"Format mobile numbers as +61 4XX XXX XXX"*, *"Rewrite names like 'Doe, John' as 'John Doe'"*. The model writes a regex with named groups plus a replacement template such as `\g<year>-\g<month>-\g<day>`. The server checks that the template only refers to groups that exist and then applies the rewrite deterministically, so the model never touches the data itself. Values already in the target format are left alone.
+- **Normalise values.** Pick a column such as `State` and optionally a goal (*"Use the official Australian state abbreviations"*). The model proposes a mapping from each variant to one clean form (`New South Wales`, `nsw` → `NSW`; `Victoria` → `VIC`) without merging values that mean different things. You review the mapping in a table, untick or edit rows, and apply it. This is the one step a regex cannot do, because it needs the meaning of the values.
 
 The brief's example works as written: on a table with `ID, Name, Email`, the instruction *"Find email addresses in the Email column and replace them with 'REDACTED'"* produces an email regex limited to the `Email` column and replaces every address with `REDACTED`. The API test suite covers this exact scenario.
 
@@ -42,14 +47,15 @@ sequenceDiagram
 
 ## Design decisions
 
-1. **The LLM only sees the instruction and column metadata.** Cell values never leave the server. This protects user data (free API tiers may use prompts for training), keeps each call to a few hundred tokens, and means a 10-row file and a 500,000-row file cost the same: the regex runs locally over all rows.
+1. **The LLM only sees the instruction and column metadata.** For find-and-replace and format rewrites, cell values never leave the server. This protects user data (free API tiers may use prompts for training), keeps each call to a few hundred tokens, and means a 10-row file and a 500,000-row file cost the same: the regex runs locally over all rows. Normalising values is the deliberate exception: it needs the meaning of the values, so it sends the selected column's distinct values (at most 300, each up to 200 characters, never other columns). The UI says so before the request is made.
 2. **Structured output and defensive parsing.** The model must return a JSON object (enforced by JSON-schema / JSON mode where the provider supports it). Replies are parsed tolerantly: markdown fences, unescaped regex backslashes and JSON's `\b`-means-backspace mistake are repaired. Backslashes escaped twice (`\\d` instead of `\d`) are caught as well: such a pattern looks for literal backslashes and finds nothing, so if the single-escaped version matches the data, that version is used. Each suggestion is validated: the regex must compile and the columns must exist. If it is invalid, the model gets one chance to fix it, with the error message as feedback. If that fails too, or the provider is down or rate-limited, the next provider is tried. Answers are cached by instruction + columns.
 3. **Provider-agnostic, free by default.** Gemini, Groq and local model servers (Ollama, llama.cpp, vLLM, LM Studio) all speak the OpenAI Chat Completions API, so a single provider class covers them. Their order and models come from environment variables. The default chain is the Gemini free tier, then the Groq free plan. Free tiers drop requests when they are busy, so each provider gets one attempt with a 15-second limit and no automatic retries. A stuck request hands over to the next provider within seconds instead of a minute.
 4. **Untrusted regexes are handled safely.** Patterns are compiled with the [`regex`](https://pypi.org/project/regex/) module and every request has a time budget, so catastrophic backtracking returns a clear error instead of hanging a worker. Patterns that would match empty text inside a value (`\d*`, `\b`) are rejected, while `^$` for empty cells is allowed. Replacements are inserted literally, so `\1` in the user's text stays `\1`.
 5. **The data keeps its exact text.** Every cell is read as a string, so phone numbers, postcodes and IDs keep their leading zeros. Encoding (UTF-8, BOM, legacy code pages) and the delimiter (`,` `;` tab `|`) are detected, and blank or duplicate headers are cleaned up. Each column gets a kind (text, numeric, date, boolean, empty), which decides the default target: the "text columns" from the brief.
 6. **Preview, then apply as versioned steps.** Each applied step writes a new Parquet version and a `Transformation` row with its pattern, replacement, columns and counts. Undo removes the latest step, and changed cells are found by comparing the current page with the previous version.
-7. **Thin views, explicit layers.** `views` → `services.operations` → `file_reader`, `regex_engine`, `storage`, `generation` → `llm`. The `llm` package knows nothing about datasets or HTTP. Errors are typed exceptions rendered as one JSON shape: `{"error": {"code", "message", "details"}}`.
-8. **Safe to expose publicly.** Uploads and LLM calls have per-IP rate limits, so strangers cannot drain the free quota. Upload size is capped, and datasets are deleted after 24 idle hours; the cleanup runs on upload, so no cron is needed. Datasets are addressed by random UUIDs and there is no endpoint that lists them.
+7. **Thin views, explicit layers.** `views` → `services.steps` / `services.operations` → `file_reader`, `regex_engine`, `value_mapping`, `storage`, `generation` → `llm`. The `llm` package knows nothing about datasets or HTTP. Errors are typed exceptions rendered as one JSON shape: `{"error": {"code", "message", "details"}}`.
+8. **One LLM engine, one module per kind of step.** The `llm` engine handles provider fallback, the one repair round and caching for any *task*. A task is a small class with its prompt, JSON schema, answer model and checks; there is one each for find-and-replace, reformat and normalise. On the dataset side, each kind of step is a module with `preview()` and `apply()`, and they share the code that records a step as a new version. Adding a fourth kind of step means adding a task, a step module and a serializer. Undo, change highlighting and export need no change.
+9. **Safe to expose publicly.** Uploads and LLM calls have per-IP rate limits, so strangers cannot drain the free quota. Upload size is capped, and datasets are deleted after 24 idle hours; the cleanup runs on upload, so no cron is needed. Datasets are addressed by random UUIDs and there is no endpoint that lists them.
 
 ## Tech stack
 
@@ -67,18 +73,21 @@ backend/
   config/                 Django settings, root URLs, SPA view
   datasets/               Django app: models, serializers, views, URLs
     services/
-      operations.py       use cases: upload, page, preview, apply, undo, export, cleanup
+      steps/              one module per kind of step (find_replace, reformat, normalize),
+                          each with preview() and apply(); base.py records a step as a new version
+      operations.py       upload, page, undo, export, cleanup
       file_reader.py      CSV / Excel parsing (everything as text)
       column_profile.py   column kind inference
-      regex_engine.py     safe compile / replace with timeouts
+      regex_engine.py     safe compile / replace / template checks, with timeouts
+      value_mapping.py    distinct values and whole-cell mappings
       storage.py          versioned Parquet files
       generation.py       bridge from datasets to the llm package
     exception_handler.py  one JSON error format for the whole API
     tests/
   llm/                    LLM layer, independent of Django models
-    prompts.py            system prompt, few-shot examples, JSON schema
+    engine.py             provider fallback, repair round, caching, lenient JSON parsing
+    tasks/                find_replace, reformat, normalize: prompt, schema, answer checks
     providers.py          OpenAI-compatible provider + factory from settings
-    generator.py          parsing, validation, repair, fallback, caching
     tests/
 frontend/
   src/
@@ -163,25 +172,36 @@ All settings are environment variables (see [`backend/.env.example`](backend/.en
 | `GET` | `/api/datasets/{id}/` | Dataset metadata, columns and steps |
 | `DELETE` | `/api/datasets/{id}/` | Delete the dataset and its files |
 | `GET` | `/api/datasets/{id}/rows/?page=1&page_size=50` | One page of the current version, with the cells the latest step changed |
-| `POST` | `/api/datasets/{id}/preview/` | Generate a regex from `instruction` (or check a given `pattern`) and preview it; changes nothing |
-| `POST` | `/api/datasets/{id}/transformations/` | Apply a replacement as a new step (an `instruction` alone also works) |
+| `POST` | `/api/datasets/{id}/preview/` | Preview a step without changing anything (see `kind` below) |
+| `POST` | `/api/datasets/{id}/transformations/` | Apply a step as a new version (an `instruction` alone also works) |
 | `POST` | `/api/datasets/{id}/transformations/undo/` | Undo the latest step |
 | `GET` | `/api/datasets/{id}/export/?file_type=csv` | Download the current version (`csv` or `xlsx`) |
 | `GET` | `/api/health/` | Health check, limits and configured LLMs |
+
+Preview and apply requests carry a `kind` (default `regex_replace`):
+
+| `kind` | Fields |
+| --- | --- |
+| `regex_replace` | `instruction`, or `pattern` + `flags`; `replacement` (`null` = take it from the instruction, `""` = remove); `columns` |
+| `reformat` | `instruction`, or `pattern` + `flags` + `template` (`\g<name>` inserts a group); `columns` |
+| `normalize_values` | `column`; optional `instruction` (the goal); optional `mapping` (`{"old": "new"}`, skips the LLM) |
 
 ```bash
 curl -F file=@people.csv http://localhost:8000/api/datasets/
 curl -X POST http://localhost:8000/api/datasets/<id>/transformations/ \
      -H "Content-Type: application/json" \
      -d '{"instruction": "Replace email addresses in the Email column with REDACTED"}'
+curl -X POST http://localhost:8000/api/datasets/<id>/preview/ \
+     -H "Content-Type: application/json" \
+     -d '{"kind": "normalize_values", "column": "State", "instruction": "Use the official state abbreviations"}'
 ```
 
-Errors always look like `{"error": {"code": "invalid_pattern", "message": "Invalid regular expression: missing ) at position 5."}}`. Codes include `unsupported_file_type`, `file_too_large`, `file_parse_error`, `invalid_pattern`, `regex_timeout`, `column_not_found`, `missing_replacement`, `no_changes`, `pattern_not_expressible`, `llm_not_configured`, `llm_unavailable`, `rate_limited`, `dataset_not_found`, `dataset_expired` and `nothing_to_undo`.
+Errors always look like `{"error": {"code": "invalid_pattern", "message": "Invalid regular expression: missing ) at position 5."}}`. Codes include `unsupported_file_type`, `file_too_large`, `file_parse_error`, `invalid_pattern`, `regex_timeout`, `column_not_found`, `column_not_suitable`, `missing_replacement`, `no_changes`, `request_not_possible`, `llm_not_configured`, `llm_unavailable`, `rate_limited`, `dataset_not_found`, `dataset_expired` and `nothing_to_undo`.
 
 ## Tests
 
 ```bash
-cd backend && pytest               # parsing, regex safety, LLM parsing / repair / fallback, API end to end
+cd backend && pytest               # parsing, regex and template safety, LLM tasks / repair / fallback, API end to end
 ruff check . && ruff format --check .
 cd frontend && npm test            # components, API client, highlighting helpers
 ```
@@ -215,4 +235,5 @@ Free-plan constraints shape the configuration: with 512 MB of RAM the service ru
 - Only the first sheet of a workbook is read.
 - The LLM answer cache and the rate limits live in each worker's memory; a shared Redis cache would make them global.
 - Uploads live on the container's disk; production would use a mounted volume or object storage.
-- More LLM-powered transformations would fit the step pipeline, such as standardising formats (DD/MM/YYYY dates to ISO 8601) or splitting a column in two.
+- A format rewrite can only rearrange captured text. It cannot pad numbers or change case, so a single-digit date like `3/2/2024` cannot become `2024-02-03`. The preview shows exactly which values would change before anything is applied.
+- Normalising works on categorical columns (up to 300 distinct values). Free text would need a different approach.

@@ -1,19 +1,28 @@
-"""Prompt text for turning a plain-English request into a regex suggestion."""
+"""Find and replace: turn a plain-English description of text into a regular expression."""
 
-import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
-from llm.types import ColumnInfo
+from llm.exceptions import InvalidSuggestion, RequestNotPossible
+from llm.tasks.common import (
+    FLAG_SCHEMA,
+    clean_flags,
+    clean_pattern,
+    conversation,
+    describe_columns,
+    required_instruction,
+    resolve_columns,
+)
+from llm.types import ColumnInfo, RegexSuggestion
 
 # Bump whenever the prompt changes, so cached answers to older prompts are not reused.
 PROMPT_VERSION = "1"
 
 # Kept to the JSON Schema subset that every provider's structured-output mode accepts.
-SUGGESTION_SCHEMA = {
+SCHEMA = {
     "type": "object",
     "properties": {
         "pattern": {"type": "string"},
-        "flags": {"type": "array", "items": {"type": "string", "enum": ["IGNORECASE", "MULTILINE", "DOTALL"]}},
+        "flags": FLAG_SCHEMA,
         "target_columns": {"type": "array", "items": {"type": "string"}},
         "replacement_specified": {"type": "boolean"},
         "replacement": {"type": "string"},
@@ -108,21 +117,52 @@ _EXAMPLES = [
     ),
 ]
 
-
-def _user_message(instruction: str, columns: Sequence[ColumnInfo]) -> str:
-    described = json.dumps([{"name": c.name, "kind": c.kind} for c in columns], ensure_ascii=False)
-    return f"Columns: {described}\nRequest: {instruction}"
+Validator = Callable[[RegexSuggestion], None]
 
 
-def build_messages(instruction: str, columns: Sequence[ColumnInfo]) -> list[dict[str, str]]:
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    for example_columns, request, answer in _EXAMPLES:
-        example = [ColumnInfo(name, kind) for name, kind in example_columns]
-        messages.append({"role": "user", "content": _user_message(request, example)})
-        messages.append({"role": "assistant", "content": json.dumps(answer)})
-    messages.append({"role": "user", "content": _user_message(instruction, columns)})
-    return messages
+def _request(columns: Sequence[ColumnInfo], instruction: str) -> str:
+    return f"Columns: {describe_columns(columns)}\nRequest: {instruction}"
 
 
-def repair_message(problem: str) -> str:
-    return f"That reply could not be used: {problem} Reply again with only the corrected JSON object."
+class FindReplaceTask:
+    """Write a regex that matches the text a user described, for find-and-replace."""
+
+    name = "find_replace"
+    answer_model = RegexSuggestion
+    schema = SCHEMA
+
+    def __init__(self, instruction: str, columns: Sequence[ColumnInfo], validate: Validator | None = None):
+        """``validate`` raises InvalidSuggestion for patterns the caller can't use."""
+        self.instruction = required_instruction(instruction)
+        self.columns = list(columns)
+        self.validate = validate
+
+    def messages(self) -> list[dict[str, str]]:
+        examples = [
+            (_request([ColumnInfo(name, kind) for name, kind in columns], request), answer)
+            for columns, request, answer in _EXAMPLES
+        ]
+        return conversation(SYSTEM_PROMPT, examples, _request(self.columns, self.instruction))
+
+    def check(self, answer: RegexSuggestion) -> RegexSuggestion:
+        if answer.error:
+            raise RequestNotPossible(answer.error)
+        if not answer.pattern:
+            raise InvalidSuggestion("'pattern' is empty although 'error' is empty too.")
+        answer = answer.model_copy(
+            update={
+                "pattern": clean_pattern(answer.pattern),
+                "flags": clean_flags(answer.flags),
+                "target_columns": resolve_columns(answer.target_columns, self.columns),
+            }
+        )
+        if self.validate is not None:
+            self.validate(answer)
+        return answer
+
+    def cache_key_data(self) -> dict:
+        return {
+            "prompt": PROMPT_VERSION,
+            "instruction": self.instruction,
+            "columns": [[c.name, c.kind] for c in self.columns],
+        }

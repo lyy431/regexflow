@@ -5,8 +5,8 @@ import openai
 import pytest
 
 from llm import ProviderUnavailable
-from llm.prompts import SUGGESTION_SCHEMA
 from llm.providers import OpenAICompatibleProvider, build_providers
+from llm.tasks.find_replace import SCHEMA as SUGGESTION_SCHEMA
 
 MESSAGES = [{"role": "user", "content": "hi"}]
 REQUEST = httpx2.Request("POST", "https://llm.test/v1/chat/completions")

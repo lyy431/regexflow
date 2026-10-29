@@ -1,5 +1,5 @@
 class LLMError(Exception):
-    """Base class for errors raised while generating a regex with an LLM."""
+    """Base class for errors raised while asking an LLM."""
 
 
 class NoProviderConfigured(LLMError):
@@ -24,9 +24,9 @@ class AllProvidersFailed(LLMError):
         super().__init__("; ".join(failures) or "No provider produced a usable answer.")
 
 
-class PatternNotExpressible(LLMError):
-    """The model explained that the request cannot be done with a regex find-and-replace."""
+class RequestNotPossible(LLMError):
+    """The model explained that the request cannot be done with this kind of step."""
 
 
 class InvalidSuggestion(Exception):
-    """A suggestion failed validation. The message is sent back to the model so it can fix it."""
+    """An answer failed validation. The message is sent back to the model so it can fix it."""

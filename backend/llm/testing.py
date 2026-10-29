@@ -24,7 +24,7 @@ class FakeProvider:
 
 
 def suggestion(pattern: str, **overrides) -> dict:
-    """A well-formed model reply for ``pattern``; override any field."""
+    """A well-formed find-and-replace answer for ``pattern``; override any field."""
     return {
         "pattern": pattern,
         "flags": [],
@@ -32,6 +32,29 @@ def suggestion(pattern: str, **overrides) -> dict:
         "replacement_specified": False,
         "replacement": "",
         "explanation": "Test pattern.",
+        "error": "",
+        **overrides,
+    }
+
+
+def reformat_answer(pattern: str, template: str, **overrides) -> dict:
+    """A well-formed format-rewrite answer; override any field."""
+    return {
+        "pattern": pattern,
+        "flags": [],
+        "template": template,
+        "target_columns": [],
+        "explanation": "Test rewrite.",
+        "error": "",
+        **overrides,
+    }
+
+
+def mapping_answer(mapping: Mapping[str, str], **overrides) -> dict:
+    """A well-formed value-mapping answer; override any field."""
+    return {
+        "mapping": [{"from": old, "to": new} for old, new in mapping.items()],
+        "explanation": "Test clean-up.",
         "error": "",
         **overrides,
     }

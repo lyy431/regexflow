@@ -2,12 +2,21 @@ import pandas as pd
 import pytest
 
 from datasets.exceptions import InvalidPattern, RegexTimeout
-from datasets.services.regex_engine import compile_pattern, finds_match, replace_in_frame
+from datasets.services.regex_engine import (
+    check_template,
+    compile_pattern,
+    finds_match,
+    literal_template,
+    replace_in_frame,
+)
+
+DATE = r"\b(?P<day>\d{2})/(?P<month>\d{2})/(?P<year>\d{4})\b"
 
 
 def replace(frame, pattern, replacement, columns, flags=(), **options):
+    """Replace with literal text, as find-and-replace does."""
     options.setdefault("timeout", 5)
-    return replace_in_frame(frame, compile_pattern(pattern, flags), replacement, columns, **options)
+    return replace_in_frame(frame, compile_pattern(pattern, flags), literal_template(replacement), columns, **options)
 
 
 class TestCompilePattern:
@@ -74,6 +83,34 @@ class TestReplaceInFrame:
         frame = pd.DataFrame({"a": ["a" * 40 + "!"]})
         with pytest.raises(RegexTimeout):
             replace(frame, r"(a|aa)+$", "x", ["a"], timeout=0.05)
+
+
+class TestTemplates:
+    def test_rearranges_named_groups(self):
+        frame = pd.DataFrame({"a": ["31/01/2024", "2024-02-01", "joined 05/03/2024"]})
+
+        outcome = replace_in_frame(frame, compile_pattern(DATE), r"\g<year>-\g<month>-\g<day>", ["a"], timeout=5)
+
+        assert outcome.frame["a"].tolist() == ["2024-01-31", "2024-02-01", "joined 2024-03-05"]
+        assert outcome.cells_changed == 2
+
+    @pytest.mark.parametrize("template", [r"\g<year>-\g<month>", r"\g<0>!", r"\1/\3", r"a\\b", r"line\nbreak"])
+    def test_accepts_templates_that_fit_the_pattern(self, template):
+        check_template(compile_pattern(DATE), template)
+
+    @pytest.mark.parametrize(
+        ("template", "message"),
+        [
+            ("", "empty"),
+            (r"\g<yyyy>", "no such group"),
+            (r"\4", "has 3 group"),
+            (r"\q", "stray backslash"),
+            ("ends with \\", "stray backslash"),
+        ],
+    )
+    def test_rejects_templates_that_do_not(self, template, message):
+        with pytest.raises(InvalidPattern, match=message):
+            check_template(compile_pattern(DATE), template)
 
 
 class TestFindsMatch:

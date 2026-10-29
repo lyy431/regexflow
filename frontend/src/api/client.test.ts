@@ -20,7 +20,9 @@ describe("api client", () => {
   it("turns error envelopes into ApiError", async () => {
     respondWith(503, { error: { code: "llm_unavailable", message: "The language model is busy." } });
 
-    const error = await api.preview("abc", { instruction: "emails" }).catch((caught: unknown) => caught);
+    const error = await api
+      .preview("abc", { kind: "regex_replace", instruction: "emails" })
+      .catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(ApiError);
     expect(error).toMatchObject({ status: 503, code: "llm_unavailable", message: "The language model is busy." });
@@ -33,10 +35,11 @@ describe("api client", () => {
 
   it("sends previews as JSON to the dataset's endpoint", async () => {
     respondWith(200, {});
-    await api.preview("d 1", { instruction: "emails", replacement: null });
+    const request = { kind: "normalize_values", column: "State", instruction: "abbreviations" } as const;
+    await api.preview("d 1", request);
 
     const [url, init] = vi.mocked(fetch).mock.calls[0];
     expect(url).toBe("/api/datasets/d%201/preview/");
-    expect(init).toMatchObject({ method: "POST", body: JSON.stringify({ instruction: "emails", replacement: null }) });
+    expect(init).toMatchObject({ method: "POST", body: JSON.stringify(request) });
   });
 });

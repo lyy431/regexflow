@@ -1,7 +1,7 @@
 """HTTP API for datasets.
 
 Views stay thin: they validate input with serializers and delegate the work to
-``datasets.services.operations``.
+``datasets.services.operations`` and the step modules in ``datasets.services.steps``.
 """
 
 import dataclasses
@@ -9,22 +9,34 @@ import io
 
 from django.conf import settings
 from django.http import FileResponse, Http404
-from rest_framework import mixins, status, viewsets
+from rest_framework import mixins, serializers, status, viewsets
 from rest_framework.decorators import action, api_view
 from rest_framework.response import Response
 
 from datasets import exceptions
-from datasets.models import Dataset
+from datasets.models import Dataset, Transformation
 from datasets.serializers import (
-    ApplyRequestSerializer,
     DatasetSerializer,
     DatasetUploadSerializer,
     ExportQuerySerializer,
-    ReplacementRequestSerializer,
+    FindReplaceApplySerializer,
+    FindReplaceRequestSerializer,
+    NormalizeApplySerializer,
+    NormalizeRequestSerializer,
+    ReformatApplySerializer,
+    ReformatRequestSerializer,
     RowsQuerySerializer,
+    StepKindSerializer,
 )
-from datasets.services import generation, operations
+from datasets.services import generation, operations, steps
 from datasets.throttling import LLMRateThrottle, UploadRateThrottle
+
+# For each kind of step: the serializer of a preview request and of an apply request.
+STEP_SERIALIZERS: dict[str, tuple[type[serializers.Serializer], type[serializers.Serializer]]] = {
+    Transformation.Kind.REGEX_REPLACE: (FindReplaceRequestSerializer, FindReplaceApplySerializer),
+    Transformation.Kind.REFORMAT: (ReformatRequestSerializer, ReformatApplySerializer),
+    Transformation.Kind.NORMALIZE_VALUES: (NormalizeRequestSerializer, NormalizeApplySerializer),
+}
 
 
 @api_view(["GET"])
@@ -41,7 +53,7 @@ def health(request):
 
 
 class DatasetViewSet(mixins.RetrieveModelMixin, mixins.DestroyModelMixin, viewsets.GenericViewSet):
-    """Upload a table, page through it, and preview / apply / undo regex replacements."""
+    """Upload a table, page through it, and preview / apply / undo steps."""
 
     queryset = Dataset.objects.prefetch_related("transformations")
     serializer_class = DatasetSerializer
@@ -76,16 +88,14 @@ class DatasetViewSet(mixins.RetrieveModelMixin, mixins.DestroyModelMixin, viewse
 
     @action(detail=True, methods=["post"])
     def preview(self, request, pk=None):
-        payload = ReplacementRequestSerializer(data=request.data)
-        payload.is_valid(raise_exception=True)
-        result = operations.preview(self.get_object(), **payload.validated_data)
+        kind, payload = self._step_request(request.data, applying=False)
+        result = steps.BY_KIND[kind].preview(self.get_object(), **payload)
         return Response(dataclasses.asdict(result))
 
     @action(detail=True, methods=["post"], url_path="transformations")
     def apply(self, request, pk=None):
-        payload = ApplyRequestSerializer(data=request.data)
-        payload.is_valid(raise_exception=True)
-        dataset = operations.apply(self.get_object(), **payload.validated_data)
+        kind, payload = self._step_request(request.data, applying=True)
+        dataset = steps.BY_KIND[kind].apply(self.get_object(), **payload)
         return Response(DatasetSerializer(dataset).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["post"], url_path="transformations/undo")
@@ -104,3 +114,14 @@ class DatasetViewSet(mixins.RetrieveModelMixin, mixins.DestroyModelMixin, viewse
             filename=exported.filename,
             content_type=exported.content_type,
         )
+
+    @staticmethod
+    def _step_request(data, *, applying: bool) -> tuple[str, dict]:
+        """Validate a step request with the serializer for its ``kind``."""
+        kind_serializer = StepKindSerializer(data=data)
+        kind_serializer.is_valid(raise_exception=True)
+        kind = kind_serializer.validated_data["kind"]
+        preview_serializer, apply_serializer = STEP_SERIALIZERS[kind]
+        payload = (apply_serializer if applying else preview_serializer)(data=data)
+        payload.is_valid(raise_exception=True)
+        return kind, payload.validated_data
