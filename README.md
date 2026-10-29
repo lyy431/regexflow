@@ -4,7 +4,7 @@ Upload a CSV or Excel file, describe what to find ("email addresses", "Australia
 
 Built with **Django + Django REST Framework** and **React + TypeScript**.
 
-- **Live demo:** _to be added_
+- **Live demo:** <https://regexflow-3zf2.onrender.com> (Render free plan: after 15 idle minutes the first visit takes about a minute while the server wakes up)
 - **Demo video:** _to be added (embedded below)_
 
 <!-- Demo video goes here -->
