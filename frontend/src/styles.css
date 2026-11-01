@@ -159,17 +159,6 @@ ins {
   padding: 24px;
 }
 
-.app-footer {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 12px 24px;
-  color: var(--text-muted);
-  font-size: 0.85rem;
-  border-top: 1px solid var(--border);
-}
-
 .loading {
   display: flex;
   align-items: center;
@@ -905,8 +894,7 @@ fieldset.field > legend {
 
 @media (max-width: 600px) {
   .app-header,
-  .app-main,
-  .app-footer {
+  .app-main {
     padding-left: 16px;
     padding-right: 16px;
   }

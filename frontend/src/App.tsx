@@ -22,7 +22,6 @@ function setDatasetIdInUrl(id: string | null) {
 
 export default function App() {
   const [serverInfo, setServerInfo] = useState<ServerInfo | null>(null);
-  const [serverDown, setServerDown] = useState(false);
   const [dataset, setDataset] = useState<Dataset | null>(null);
   const [restoring, setRestoring] = useState(() => datasetIdFromUrl() !== null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -31,7 +30,7 @@ export default function App() {
     api
       .health()
       .then(setServerInfo)
-      .catch(() => setServerDown(true));
+      .catch(() => setServerInfo(null));
   }, []);
 
   useEffect(() => {
@@ -79,19 +78,6 @@ export default function App() {
           <UploadPanel serverInfo={serverInfo} notice={notice} onUploaded={openDataset} />
         )}
       </main>
-
-      <footer className="app-footer">
-        <span>
-          {serverDown
-            ? "The server is not responding."
-            : !serverInfo
-              ? "Connecting to the server…"
-              : serverInfo.llm_providers.length > 0
-                ? `Language models: ${serverInfo.llm_providers.join(" → ")}`
-                : "No language model configured: write regular expressions by hand."}
-        </span>
-        <span>Django · React · free-tier LLM APIs</span>
-      </footer>
     </div>
   );
 }
