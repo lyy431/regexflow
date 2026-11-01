@@ -59,7 +59,6 @@ export default function App() {
           <span className="brand__mark" aria-hidden="true" />
           <span className="brand__name">RegexFlow</span>
         </a>
-        <span className="app-header__tagline">Find and replace with plain English</span>
       </header>
 
       <main className="app-main">

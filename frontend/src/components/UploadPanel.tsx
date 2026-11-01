@@ -55,7 +55,7 @@ export function UploadPanel({ serverInfo, notice, onUploaded }: Props) {
   return (
     <section className="upload">
       <div className="upload__intro">
-        <h1>Find and replace in spreadsheets, in plain English</h1>
+        <h1>Find and replace in spreadsheets</h1>
         <p>
           Upload a CSV or Excel file and describe what to find, such as “email addresses” or “Australian mobile
           numbers”. A language model writes the regular expression, and you preview every change before applying it.

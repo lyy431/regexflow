@@ -147,10 +147,6 @@ ins {
   background: linear-gradient(135deg, #0f766e, #67e8f9);
 }
 
-.app-header__tagline {
-  color: var(--text-muted);
-}
-
 .app-main {
   flex: 1;
   width: 100%;
@@ -897,10 +893,6 @@ fieldset.field > legend {
   .app-main {
     padding-left: 16px;
     padding-right: 16px;
-  }
-
-  .app-header__tagline {
-    display: none;
   }
 
   .upload__intro h1 {
